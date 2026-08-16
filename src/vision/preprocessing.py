@@ -1,5 +1,3 @@
-"""Image validation, resizing, and contrast normalization."""
-
 from __future__ import annotations
 
 import logging

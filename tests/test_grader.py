@@ -27,9 +27,9 @@ def test_all_correct():
 
 def test_mixed_and_unanswered():
     detected = [
-        DetectedAnswer(1, "B", AnswerState.CLEAR),  # incorrect
-        DetectedAnswer(2, None, AnswerState.BLANK),  # unanswered
-        DetectedAnswer(3, "C", AnswerState.STRUCK_THROUGH),  # struck -> unanswered
+        DetectedAnswer(1, "B", AnswerState.CLEAR),
+        DetectedAnswer(2, None, AnswerState.BLANK),
+        DetectedAnswer(3, "C", AnswerState.STRUCK_THROUGH),
     ]
     result = grade_submission(detected, _key())
     assert result.correct_count == 0

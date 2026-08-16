@@ -14,10 +14,6 @@ def get_vision_provider() -> VisionProvider:
         from src.ai.claude_provider import ClaudeVisionProvider
 
         return ClaudeVisionProvider()
-    if provider == "local":
-        from src.ai.local_vlm_provider import LocalVLMProvider
-
-        return LocalVLMProvider()
 
     from src.ai.null_provider import NullVisionProvider
 

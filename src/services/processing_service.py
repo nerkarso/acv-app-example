@@ -204,11 +204,7 @@ def _process_answers(
                 escalated += 1
                 detected_answer = detection.answer
                 confidence = detection.confidence
-                method = (
-                    DetectionMethod.CLOUD_VLM
-                    if settings.vision_provider == "claude"
-                    else DetectionMethod.LOCAL_VLM
-                )
+                method = DetectionMethod.CLOUD_VLM
                 answer_state = detection.state
                 if detection.answer is None:
                     review_status = ReviewStatus.PENDING

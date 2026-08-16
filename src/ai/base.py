@@ -1,7 +1,7 @@
 """Pluggable vision-provider interface for low-confidence escalation.
 
 Pipeline code depends only on this interface, never on a concrete provider,
-so Claude/local-VLM/none are interchangeable via VISION_PROVIDER.
+so Claude/none are interchangeable via VISION_PROVIDER.
 """
 
 from __future__ import annotations

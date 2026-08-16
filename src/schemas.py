@@ -26,7 +26,6 @@ class DetectionMethod(str, Enum):
     OPENCV = "opencv"
     PADDLEOCR = "paddleocr"
     CLOUD_VLM = "cloud_vlm"
-    LOCAL_VLM = "local_vlm"
     MANUAL = "manual"
 
 

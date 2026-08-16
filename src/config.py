@@ -1,5 +1,3 @@
-"""Central configuration, loaded from environment variables / .env."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,17 +10,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # Vision escalation provider
-    vision_provider: str = "none"  # claude | local | none
+    vision_provider: str = "none"  # claude | none
     anthropic_api_key: str | None = None
-    local_vlm_endpoint: str | None = None
 
-    # Confidence tiers for auto-accept / escalation / manual review
     confidence_auto_accept: float = 0.90
     confidence_escalate_min: float = 0.70
     paddle_ocr_confidence_threshold: float = 0.85
 
-    # Storage
     database_path: str = "data/local.db"
     data_dir: str = "data"
     uploads_dir: str = "data/uploads"
@@ -30,7 +24,6 @@ class Settings(BaseSettings):
     crops_dir: str = "data/crops"
     exports_dir: str = "data/exports"
 
-    # Logging
     log_level: str = "INFO"
 
     @property

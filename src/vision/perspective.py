@@ -1,5 +1,3 @@
-"""Perspective transform + deskew given detected document corners."""
-
 from __future__ import annotations
 
 import logging
