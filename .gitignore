@@ -1,10 +1,17 @@
-# Python-generated files
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
+*.pyc
+.venv/
+.env
+data/*.db
+data/uploads/*
+data/processed/*
+data/crops/*
+data/exports/*
+!data/uploads/.gitkeep
+!data/processed/.gitkeep
+!data/crops/.gitkeep
+!data/exports/.gitkeep
+.DS_Store
+*.egg-info/
+.pytest_cache/
+.claude
