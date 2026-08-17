@@ -73,20 +73,16 @@ class DocumentDetectionResult(BaseModel):
 
 
 class LineRegion(BaseModel):
-    """A single detected answer-line or header-field region, located by content."""
+    """A single detected header-field region, located by content."""
 
     bbox: BoundingBox
     crop_image_path: str | None = None
 
 
-class AnswerLineRegion(LineRegion):
-    """One detected number+letter unit in the answer body."""
-
-    question_number_hint: int | None = None
-
-
 class HeaderFieldRegion(LineRegion):
     field_name: str
+    inline_text: str | None = None
+    inline_confidence: float = 0.0
 
 
 class OCRFieldResult(BaseModel):

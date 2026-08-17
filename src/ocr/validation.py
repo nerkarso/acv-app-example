@@ -13,10 +13,13 @@ from src.config import settings
 from src.ocr.paddle import RawOCRLine
 from src.schemas import OCRAnswerResult, OCRFieldResult, VALID_ANSWERS
 
-# e.g. "9. A", "9) B", "9 - C", "9D", "9:A" -- number, separator noise, letter
-_ANSWER_PATTERN = re.compile(r"^\s*(\d{1,3})\s*[.\-:)\]]?\s*([A-Da-d])\s*$")
+# e.g. "9. A", "9) B", "9 - C", "9D", "9:A", "9 C." -- number, separator
+# noise, letter, optional trailing separator noise (students commonly end
+# the letter with a period, e.g. "2 C.")
+_ANSWER_PATTERN = re.compile(r"^\s*(\d{1,3})\s*[.\-:)\]]?\s*([A-Da-d])\s*[.\-:)\]]?\s*$")
 
-STUDENT_NUMBER_PATTERN = re.compile(r"^\d{4,10}$")
+# Format: SE/00YY/000
+STUDENT_NUMBER_PATTERN = re.compile(r"^SE/\d{4}/\d{3}$", re.IGNORECASE)
 
 
 def parse_answer_line(raw: RawOCRLine, num_questions: int) -> OCRAnswerResult:

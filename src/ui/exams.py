@@ -7,6 +7,7 @@ import streamlit as st
 
 from src.schemas import VALID_ANSWERS
 from src.services import exam_service
+from src.ui._format import humanize
 from src.ui._record_table import record_table
 from src.ui._table_controls import get_page_size, paginate_slice, pagination_controls
 
@@ -43,7 +44,7 @@ def _create_exam_dialog() -> None:
 @st.dialog("Delete exam")
 def _confirm_delete_exam(exam_id: int, exam_name: str) -> None:
     st.warning(
-        f"This permanently deletes '{exam_name}' and all of its questions, submissions, "
+        f"This permanently deletes '{exam_name}' and all of its questions, answer sheets, "
         "answers, and images. This cannot be undone."
     )
     with st.container(horizontal=True, horizontal_alignment="distribute"):
@@ -59,7 +60,7 @@ def _confirm_delete_exam(exam_id: int, exam_name: str) -> None:
 @st.dialog("Delete exams")
 def _confirm_bulk_delete_exams(exam_ids: list[int]) -> None:
     st.warning(
-        f"This permanently deletes {len(exam_ids)} exam(s) and all of their questions, submissions, "
+        f"This permanently deletes {len(exam_ids)} exam(s) and all of their questions, answer sheets, "
         "answers, and images. This cannot be undone."
     )
     with st.container(horizontal=True, horizontal_alignment="distribute"):
@@ -75,7 +76,6 @@ def _confirm_bulk_delete_exams(exam_ids: list[int]) -> None:
 
 
 def _exam_details_editor(exam) -> None:
-    st.subheader("Exam details")
     with st.form("edit_exam_form"):
         name = st.text_input("Exam name", value=exam.name)
         course = st.text_input("Course", value=exam.course or "")
@@ -109,32 +109,59 @@ def _exam_details_editor(exam) -> None:
 
 
 def _answer_key_editor(exam_id: int) -> None:
-    st.subheader("Answer key")
-
     existing = exam_service.get_answer_key(exam_id)
     default_size = st.session_state.pop("_pending_answer_key_size", None) or len(existing) or 20
 
-    tab_dropdown, tab_csv = st.tabs(["Dropdowns", "CSV import"])
+    tab_table, tab_paste, tab_csv = st.tabs(["Table", "Paste", "CSV file"])
 
-    with tab_dropdown:
-        num_questions = st.number_input(
-            "Number of questions", min_value=1, max_value=200, value=int(default_size), key="key_num_questions"
-        )
+    with tab_table:
+        existing_points = existing[0].points if existing else 1.0
+        with st.container(horizontal=True):
+            num_questions = st.number_input(
+                "Number of questions", min_value=1, max_value=200, value=int(default_size), key="key_num_questions"
+            )
+            points = st.number_input(
+                "Points per question", min_value=0.1, value=float(existing_points), step=0.5, key="key_points_per_question"
+            )
+
         existing_map = {q.question_number: q.correct_answer for q in existing}
+        key_df = pd.DataFrame(
+            {
+                "question": list(range(1, int(num_questions) + 1)),
+                "answer": [existing_map.get(i, "A") for i in range(1, int(num_questions) + 1)],
+            }
+        )
+        edited = st.data_editor(
+            key_df,
+            key="answer_key_editor",
+            hide_index=True,
+            num_rows="fixed",
+            disabled=["question"],
+            column_config={
+                "question": st.column_config.NumberColumn("Question", width="small"),
+                "answer": st.column_config.SelectboxColumn("Answer", options=VALID_ANSWERS, required=True),
+            },
+        )
+        if st.button("Save answer key"):
+            answers = {int(str(row["question"])): str(row["answer"]) for _, row in edited.iterrows()}
+            exam_service.set_answer_key_from_dropdowns(exam_id, answers, points)
+            st.toast("Answer key saved.", icon=":material/check_circle:")
+            st.rerun()
 
-        with st.form("answer_key_form"):
-            answers: dict[int, str] = {}
-            cols = st.columns(4)
-            for i in range(1, int(num_questions) + 1):
-                col = cols[(i - 1) % 4]
-                default = existing_map.get(i, "A")
-                answers[i] = col.selectbox(
-                    f"Q{i}", VALID_ANSWERS, index=VALID_ANSWERS.index(default), key=f"answer_key_q{i}"
-                )
-            points = st.number_input("Points per question", min_value=0.1, value=1.0, step=0.5)
-            if st.form_submit_button("Save answer key"):
-                exam_service.set_answer_key_from_dropdowns(exam_id, answers, points)
-                st.toast("Answer key saved.", icon=":material/check_circle:")
+    with tab_paste:
+        st.caption("Paste a CSV (question,answer,points) or just a list of answer letters, e.g. \"A B C D\"")
+        text = st.text_area("Answer key text", height=200, label_visibility="collapsed", key="answer_key_text")
+        text_points = st.number_input(
+            "Points per question (used for a letter list)", min_value=0.1, value=1.0, step=0.5, key="key_text_points"
+        )
+        if st.button("Import text"):
+            if not text.strip():
+                st.error("Paste an answer key first.")
+            else:
+                warnings = exam_service.set_answer_key_from_text(exam_id, text, text_points)
+                if warnings:
+                    st.warning("Some rows were skipped:\n" + "\n".join(warnings))
+                st.toast("Answer key imported.", icon=":material/check_circle:")
                 st.rerun()
 
     with tab_csv:
@@ -147,39 +174,33 @@ def _answer_key_editor(exam_id: int) -> None:
             st.toast("Answer key imported.", icon=":material/check_circle:")
             st.rerun()
 
-    if existing:
-        st.dataframe(
-            pd.DataFrame([{"question": q.question_number, "answer": q.correct_answer, "points": q.points} for q in existing]),
-            hide_index=True,
-        )
 
-
-@st.dialog("Delete submission")
-def _confirm_delete_submission(submission_id: int) -> None:
+@st.dialog("Delete answer sheets")
+def _confirm_bulk_delete_submissions(submission_ids: list[int]) -> None:
     st.warning(
-        f"This permanently deletes submission {submission_id}, its answers, and its images. "
+        f"This permanently deletes {len(submission_ids)} answer sheet(s), their answers, and their images. "
         "This cannot be undone."
     )
     with st.container(horizontal=True, horizontal_alignment="distribute"):
         if st.button("Delete", type="primary"):
-            exam_service.delete_submission(submission_id)
+            for submission_id in submission_ids:
+                exam_service.delete_submission(submission_id)
             st.rerun()
         if st.button("Cancel"):
             st.rerun()
 
 
 def _submissions_view(exam_id: int) -> None:
-    st.subheader("Submissions")
     submissions = exam_service.list_submissions(exam_id)
     if not submissions:
-        st.info("No submissions yet for this exam. Use the Upload page to add some.")
+        st.info("No answer sheets yet for this exam. Use the Upload page to add some.")
         return
 
     df = pd.DataFrame(
         [
             {
                 "id": s.id,
-                "status": s.status,
+                "status": humanize(s.status),
                 "score": s.score,
                 "percentage": s.percentage,
                 "created_at": s.created_at,
@@ -187,12 +208,26 @@ def _submissions_view(exam_id: int) -> None:
             for s in submissions
         ]
     )
-    st.dataframe(df, hide_index=True)
-
-    with st.container(horizontal=True):
-        submission_id = st.selectbox("Submission to delete", [s.id for s in submissions], label_visibility="collapsed")
-        if st.button("Delete submission", icon=":material/delete:"):
-            _confirm_delete_submission(submission_id)
+    event = st.dataframe(
+        df,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="multi-row",
+        key="submissions_table",
+        column_config={
+            "id": st.column_config.NumberColumn("ID", width="small"),
+            "status": st.column_config.TextColumn("Status"),
+            "score": st.column_config.NumberColumn("Score"),
+            "percentage": st.column_config.NumberColumn("Percentage", format="%.1f%%"),
+            "created_at": st.column_config.DatetimeColumn("Created at"),
+        },
+    )
+    selected_rows = event.get("selection", {}).get("rows", [])
+    selected_ids = df.iloc[selected_rows]["id"].tolist()
+    if selected_ids and st.button(
+        f"Delete selected ({len(selected_ids)})", icon=":material/delete:", type="primary"
+    ):
+        _confirm_bulk_delete_submissions(selected_ids)
 
 
 def _render_exam_detail(exam) -> None:
@@ -201,11 +236,14 @@ def _render_exam_detail(exam) -> None:
         st.rerun()
 
     st.header(exam.name)
-    _exam_details_editor(exam)
-    st.divider()
-    _answer_key_editor(exam.id)
-    st.divider()
-    _submissions_view(exam.id)
+
+    tab_details, tab_answer_key, tab_submissions = st.tabs(["Exam details", "Answer key", "Answer sheets"])
+    with tab_details:
+        _exam_details_editor(exam)
+    with tab_answer_key:
+        _answer_key_editor(exam.id)
+    with tab_submissions:
+        _submissions_view(exam.id)
 
 
 def _render_exam_list(exams) -> None:

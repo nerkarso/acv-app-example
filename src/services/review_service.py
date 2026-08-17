@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 
 from src.database.database import get_session
-from src.database.models import Submission
+from src.database.models import Student, Submission
 from src.database.repositories import AnswerRepository, ExamRepository, StudentRepository, SubmissionRepository
 from src.schemas import VALID_ANSWERS
 
@@ -90,6 +90,30 @@ def resolve_submission_issue(submission_id: int, student_number: str, name: str 
             _finalize_submission_status(session, submission_id, cleared_error_code="STUDENT_NUMBER_UNREADABLE")
 
 
+def update_submission_student(submission_id: int, student_number: str, name: str | None) -> None:
+    """Reassign or rename a submission's student, edited directly from the
+    Results summary table -- independent of any pending submission-level
+    issue (unlike resolve_submission_issue, this always applies the given
+    name rather than only filling in a blank one)."""
+    with get_session() as session:
+        submission_repo = SubmissionRepository(session)
+
+        student = session.execute(
+            select(Student).where(Student.student_number == student_number)
+        ).scalar_one_or_none()
+        if student is not None:
+            student.name = name
+            session.flush()
+        else:
+            student = StudentRepository(session).get_or_create(student_number, name)
+
+        submission_repo.set_student(submission_id, student.id)
+
+        submission = submission_repo.get(submission_id)
+        if submission is not None and submission.error_code == "STUDENT_NUMBER_UNREADABLE":
+            _finalize_submission_status(session, submission_id, cleared_error_code="STUDENT_NUMBER_UNREADABLE")
+
+
 def list_review_queue(exam_id: int | None = None) -> list[ReviewItem]:
     with get_session() as session:
         answer_repo = AnswerRepository(session)
@@ -137,6 +161,64 @@ def confirm_answer(answer_id: int) -> None:
     with get_session() as session:
         answer_repo = AnswerRepository(session)
         answer_repo.confirm(answer_id)
+
+
+def set_answer(submission_id: int, question_number: int, detected_answer: str | None) -> None:
+    """Manually set a submission's answer for one question from the Results
+    question-breakdown editor -- creates the answer row if that question
+    wasn't previously detected, otherwise applies a correction."""
+    detected_answer = detected_answer or None
+    if detected_answer is not None and detected_answer not in VALID_ANSWERS:
+        raise ValueError(f"Invalid answer: {detected_answer!r}")
+
+    with get_session() as session:
+        answer_repo = AnswerRepository(session)
+        submission_repo = SubmissionRepository(session)
+        exam_repo = ExamRepository(session)
+
+        submission = submission_repo.get(submission_id)
+        if submission is None:
+            raise ValueError(f"Submission {submission_id} not found")
+
+        answer_key = {q.question_number: q.correct_answer for q in exam_repo.get_answer_key(submission.exam_id)}
+        correct_answer = answer_key.get(question_number)
+        answer_state = "clear" if detected_answer is not None else "blank"
+
+        existing = next(
+            (a for a in answer_repo.list_for_submission(submission_id) if a.question_number == question_number),
+            None,
+        )
+        if existing is not None:
+            answer_repo.correct(existing.id, detected_answer, answer_state)
+        else:
+            is_correct = (detected_answer == correct_answer) if (detected_answer and correct_answer) else None
+            answer_repo.create(
+                submission_id=submission_id,
+                question_number=question_number,
+                detected_answer=detected_answer,
+                correct_answer=correct_answer,
+                confidence=1.0,
+                detection_method="manual",
+                answer_state=answer_state,
+                review_status="confirmed",
+                is_correct=is_correct,
+            )
+
+        _finalize_submission_status(session, submission_id)
+
+
+def delete_answer(submission_id: int, question_number: int) -> None:
+    """Remove a submission's answer row for one question (a row deleted from
+    the Results question-breakdown editor)."""
+    with get_session() as session:
+        answer_repo = AnswerRepository(session)
+        existing = next(
+            (a for a in answer_repo.list_for_submission(submission_id) if a.question_number == question_number),
+            None,
+        )
+        if existing is not None:
+            answer_repo.delete(existing.id)
+        _finalize_submission_status(session, submission_id)
 
 
 def _recompute_submission_totals(session, answer_id: int) -> None:

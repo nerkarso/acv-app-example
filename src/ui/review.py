@@ -3,6 +3,7 @@ from __future__ import annotations
 import streamlit as st
 
 from src.services import exam_service, review_service
+from src.ui._format import badge, humanize
 
 
 def _render_answer_queue(exam_id: int | None) -> None:
@@ -15,32 +16,31 @@ def _render_answer_queue(exam_id: int | None) -> None:
     st.caption(f"{len(items)} answer(s) pending review.")
 
     for item in items:
-        with st.container(border=True):
-            cols = st.columns([1, 2, 2])
+        with st.container(border=True), st.container(horizontal=True, vertical_alignment="center"):
+            if item.crop_image_path:
+                try:
+                    st.image(item.crop_image_path, width=150)
+                except Exception:
+                    st.caption("Crop image unavailable")
 
-            with cols[0]:
-                if item.crop_image_path:
-                    try:
-                        st.image(item.crop_image_path, width=150)
-                    except Exception:
-                        st.caption("Crop image unavailable")
-
-            with cols[1]:
+            with st.container(width="stretch"):
                 st.write(f"**Student:** {item.student_number or 'unknown'} - {item.student_name or ''}")
                 st.write(f"**Question:** {item.question_number}")
-                st.write(f"**Detected:** {item.detected_answer or 'UNKNOWN'} ({item.answer_state})")
+                with st.container(horizontal=True, vertical_alignment="center"):
+                    st.write(f"**Detected:** {item.detected_answer or 'UNKNOWN'}")
+                    badge(item.answer_state)
                 st.write(
                     f"**Confidence:** {item.confidence:.2f}" if item.confidence is not None else "**Confidence:** n/a"
                 )
-                st.write(f"**Method:** {item.detection_method}")
+                st.write(f"**Method:** {humanize(item.detection_method)}")
 
-            with cols[2]:
-                choice_cols = st.columns(5)
-                labels = ["A", "B", "C", "D", "UNKNOWN"]
-                for i, label in enumerate(labels):
-                    if choice_cols[i].button(label, key=f"correct_{item.answer_id}_{label}"):
-                        review_service.correct_answer(item.answer_id, label)
-                        st.rerun()
+            with st.container(width="content"):
+                with st.container(horizontal=True):
+                    labels = ["A", "B", "C", "D", "UNKNOWN"]
+                    for label in labels:
+                        if st.button(label, key=f"correct_{item.answer_id}_{label}"):
+                            review_service.correct_answer(item.answer_id, label)
+                            st.rerun()
 
                 if st.button("Confirm as-is", key=f"confirm_{item.answer_id}"):
                     review_service.confirm_answer(item.answer_id)
@@ -54,7 +54,7 @@ def _render_submission_issues(exam_id: int | None) -> None:
         st.success("No document-detection or student-number issues pending.")
         return
 
-    st.caption(f"{len(issues)} submission(s) with a document/header-level issue.")
+    st.caption(f"{len(issues)} answer sheet(s) with a document/header-level issue.")
 
     for issue in issues:
         with st.container(border=True):
@@ -68,8 +68,8 @@ def _render_submission_issues(exam_id: int | None) -> None:
                     st.caption("Image unavailable")
 
             with cols[1]:
-                st.write(f"**Submission:** {issue.submission_id}")
-                st.write(f"**Issue:** {issue.error_code}")
+                st.write(f"**Answer sheet:** {issue.submission_id}")
+                badge(issue.error_code, default_color="red")
                 if issue.error_message:
                     st.caption(issue.error_message)
                 st.write(f"**Student:** {issue.student_number or 'unknown'} - {issue.student_name or ''}")

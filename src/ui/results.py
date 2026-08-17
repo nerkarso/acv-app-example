@@ -4,8 +4,10 @@ import pandas as pd
 import streamlit as st
 
 from src.database.database import get_session
-from src.database.repositories import AnswerRepository, SubmissionRepository
-from src.services import exam_service
+from src.database.repositories import SubmissionRepository
+from src.services import exam_service, review_service
+from src.ui._answer_editor import render_answers_editor
+from src.ui._format import humanize
 
 
 def render() -> None:
@@ -32,36 +34,53 @@ def render() -> None:
                     "score": s.score,
                     "total_points": s.total_points,
                     "percentage": s.percentage,
-                    "status": s.status,
+                    "status": humanize(s.status),
                     "submission_id": s.id,
                 }
             )
 
     if not summary_rows:
-        st.info("No submissions for this exam yet.")
+        st.info("No answer sheets for this exam yet.")
         return
 
-    st.dataframe(pd.DataFrame(summary_rows), hide_index=True)
+    summary_df = pd.DataFrame(summary_rows)
+    summary_editor_key = f"summary_editor_{exam_id}"
+    st.data_editor(
+        summary_df,
+        key=summary_editor_key,
+        hide_index=True,
+        num_rows="fixed",
+        column_config={
+            "student_number": st.column_config.TextColumn("Student number"),
+            "name": st.column_config.TextColumn("Name"),
+            "score": st.column_config.NumberColumn("Score", disabled=True),
+            "total_points": st.column_config.NumberColumn("Total points", disabled=True),
+            "percentage": st.column_config.NumberColumn("Percentage", format="%.1f%%", disabled=True),
+            "status": st.column_config.TextColumn("Status", disabled=True),
+            "submission_id": st.column_config.NumberColumn("Answer sheet ID", disabled=True),
+        },
+    )
+
+    if st.button("Save answer sheets"):
+        summary_editor_state = st.session_state[summary_editor_key]
+
+        for idx, changes in summary_editor_state["edited_rows"].items():
+            if "student_number" in changes or "name" in changes:
+                original_row = summary_df.iloc[idx]
+                student_number = changes.get("student_number", original_row["student_number"])
+                name = changes.get("name", original_row["name"])
+                if student_number:
+                    review_service.update_submission_student(
+                        int(original_row["submission_id"]), student_number, name or None
+                    )
+
+        st.toast("Answer sheets updated.", icon=":material/check_circle:")
+        st.rerun()
 
     st.divider()
     st.subheader("Question breakdown")
-    submission_labels = {f"{r['student_number']} (submission {r['submission_id']})": r["submission_id"] for r in summary_rows}
-    chosen = st.selectbox("Select submission", list(submission_labels.keys()))
+    submission_labels = {f"{r['student_number']} (answer sheet {r['submission_id']})": r["submission_id"] for r in summary_rows}
+    chosen = st.selectbox("Select answer sheet", list(submission_labels.keys()))
     submission_id = submission_labels[chosen]
 
-    with get_session() as session:
-        answer_repo = AnswerRepository(session)
-        answers = answer_repo.list_for_submission(submission_id)
-        rows = [
-            {
-                "question": a.question_number,
-                "detected": a.detected_answer,
-                "correct_answer": a.correct_answer,
-                "is_correct": a.is_correct,
-                "state": a.answer_state,
-                "review_status": a.review_status,
-            }
-            for a in answers
-        ]
-
-    st.dataframe(pd.DataFrame(rows), hide_index=True)
+    render_answers_editor(submission_id)

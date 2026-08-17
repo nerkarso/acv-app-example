@@ -213,6 +213,15 @@ class SubmissionRepository:
             ).scalars()
         )
 
+    def list_for_student(self, student_id: int) -> list[Submission]:
+        return list(
+            self.session.execute(
+                select(Submission)
+                .where(Submission.student_id == student_id)
+                .order_by(Submission.created_at.desc())
+            ).scalars()
+        )
+
     def delete(self, submission_id: int) -> list[str]:
         """Deletes the submission row (answers/logs cascade) and returns the
         image file paths (original, processed, per-answer crops) so the
@@ -388,6 +397,12 @@ class AnswerRepository:
         answer.review_status = "confirmed"
         self.session.flush()
         return answer
+
+    def delete(self, answer_id: int) -> None:
+        answer = self.get(answer_id)
+        if answer is not None:
+            self.session.delete(answer)
+            self.session.flush()
 
 
 class ProcessingLogRepository:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+import re
 from pathlib import Path
 
 from src.database.database import get_session
@@ -127,6 +128,30 @@ def set_answer_key_from_csv(exam_id: int, csv_bytes: bytes) -> list[str]:
             parsed_rows.append((key_row.question, key_row.answer, key_row.points))
         except Exception as exc:
             warnings.append(f"Row {i}: {exc}")
+
+    with get_session() as session:
+        repo = ExamRepository(session)
+        repo.set_answer_key(exam_id, parsed_rows)
+
+    return warnings
+
+
+def set_answer_key_from_text(exam_id: int, text: str, points: float = 1.0) -> list[str]:
+    """Parse pasted answer-key text: either full CSV (question,answer,points
+    header) or a plain list of answer letters, one per question in order."""
+    text = text.strip()
+    first_line = text.splitlines()[0] if text else ""
+    if "," in first_line and re.search(r"(?i)\bquestion\b", first_line):
+        return set_answer_key_from_csv(exam_id, text.encode("utf-8"))
+
+    warnings: list[str] = []
+    parsed_rows: list[tuple[int, str, float]] = []
+    for i, letter in enumerate(re.findall(r"[A-Da-d]", text), start=1):
+        try:
+            key_row = AnswerKeyRow(question=i, answer=letter, points=points)
+            parsed_rows.append((key_row.question, key_row.answer, key_row.points))
+        except Exception as exc:
+            warnings.append(f"Answer {i}: {exc}")
 
     with get_session() as session:
         repo = ExamRepository(session)

@@ -33,7 +33,7 @@ def render() -> None:
         fig = px.histogram(x=distribution["percentages"], nbins=20, labels={"x": "Percentage"})
         st.plotly_chart(fig, width="stretch")
     else:
-        st.info("No graded submissions yet.")
+        st.info("No graded answer sheets yet.")
 
     st.divider()
     st.subheader("Per-Question Difficulty (easiest -> hardest)")
@@ -41,7 +41,16 @@ def render() -> None:
     if not difficulty_df.empty:
         fig = px.bar(difficulty_df, x="question_number", y="pct_correct", labels={"pct_correct": "% Correct"})
         st.plotly_chart(fig, width="stretch")
-        st.dataframe(difficulty_df, hide_index=True)
+        st.dataframe(
+            difficulty_df,
+            hide_index=True,
+            column_config={
+                "question_number": st.column_config.NumberColumn("Question", width="small"),
+                "pct_correct": st.column_config.NumberColumn("% correct", format="%.1f%%"),
+                "n_gradable": st.column_config.NumberColumn("Gradable answers"),
+                "n_ungraded": st.column_config.NumberColumn("Ungraded answers"),
+            },
+        )
     else:
         st.info("No answer data yet.")
 

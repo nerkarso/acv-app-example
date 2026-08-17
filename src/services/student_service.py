@@ -1,8 +1,45 @@
 from __future__ import annotations
 
+import datetime as dt
+from dataclasses import dataclass
+
 from src.database.database import get_session
 from src.database.models import Student
-from src.database.repositories import StudentRepository
+from src.database.repositories import StudentRepository, SubmissionRepository
+
+
+@dataclass
+class StudentSubmission:
+    submission_id: int
+    exam_id: int
+    exam_name: str
+    status: str
+    score: float | None
+    total_points: float | None
+    percentage: float | None
+    original_image_path: str
+    processed_image_path: str | None
+    created_at: dt.datetime
+
+
+def list_submissions_for_student(student_id: int) -> list[StudentSubmission]:
+    with get_session() as session:
+        submissions = SubmissionRepository(session).list_for_student(student_id)
+        return [
+            StudentSubmission(
+                submission_id=s.id,
+                exam_id=s.exam_id,
+                exam_name=s.exam.name,
+                status=s.status,
+                score=s.score,
+                total_points=s.total_points,
+                percentage=s.percentage,
+                original_image_path=s.original_image_path,
+                processed_image_path=s.processed_image_path,
+                created_at=s.created_at,
+            )
+            for s in submissions
+        ]
 
 
 def list_students() -> list[Student]:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import streamlit as st
 
 from src.services import student_service
+from src.ui._answer_editor import render_answers_editor
+from src.ui._format import badge
 from src.ui._record_table import record_table
 from src.ui._table_controls import get_page_size, paginate_slice, pagination_controls
 
@@ -27,7 +29,7 @@ def _create_student_dialog() -> None:
 @st.dialog("Delete student")
 def _confirm_delete_student(student_id: int, student_number: str) -> None:
     st.warning(
-        f"This permanently deletes student '{student_number}'. Their existing submissions "
+        f"This permanently deletes student '{student_number}'. Their existing answer sheets "
         "are kept but unlinked from this student. This cannot be undone."
     )
     with st.container(horizontal=True, horizontal_alignment="distribute"):
@@ -43,7 +45,7 @@ def _confirm_delete_student(student_id: int, student_number: str) -> None:
 @st.dialog("Delete students")
 def _confirm_bulk_delete_students(student_ids: list[int]) -> None:
     st.warning(
-        f"This permanently deletes {len(student_ids)} student(s). Their existing submissions "
+        f"This permanently deletes {len(student_ids)} student(s). Their existing answer sheets "
         "are kept but unlinked. This cannot be undone."
     )
     with st.container(horizontal=True, horizontal_alignment="distribute"):
@@ -59,7 +61,6 @@ def _confirm_bulk_delete_students(student_ids: list[int]) -> None:
 
 
 def _edit_student(student) -> None:
-    st.subheader("Edit student")
     with st.form("edit_student_form"):
         student_number = st.text_input("Student number", value=student.student_number)
         name = st.text_input("Name", value=student.name or "")
@@ -85,13 +86,51 @@ def _edit_student(student) -> None:
             _confirm_delete_student(student.id, student.student_number)
 
 
+def _submissions_view(student_id: int) -> None:
+    submissions = student_service.list_submissions_for_student(student_id)
+    if not submissions:
+        st.info("No answer sheets yet for this student.")
+        return
+
+    options = {
+        f"{s.exam_name} - {s.created_at:%Y-%m-%d %H:%M} (answer sheet {s.submission_id})": s
+        for s in submissions
+    }
+    chosen = st.selectbox("Answer sheet", list(options.keys()), label_visibility="collapsed")
+    submission = options[chosen]
+
+    cols = st.columns(4)
+    with cols[0]:
+        st.caption("Status")
+        badge(submission.status)
+    cols[1].metric("Score", submission.score if submission.score is not None else "--")
+    cols[2].metric("Total points", submission.total_points if submission.total_points is not None else "--")
+    cols[3].metric(
+        "Percentage", f"{submission.percentage:.1f}%" if submission.percentage is not None else "--"
+    )
+
+    image_path = submission.processed_image_path or submission.original_image_path
+    try:
+        st.image(image_path, width="stretch")
+    except Exception:
+        st.caption("Image unavailable.")
+
+    st.subheader("Answers")
+    render_answers_editor(submission.submission_id, key_prefix="student_answers")
+
+
 def _render_student_detail(student) -> None:
     if st.button("Back to students", icon=":material/arrow_back:"):
         st.session_state["_student_view"] = "list"
         st.rerun()
 
     st.header(student.name or student.student_number)
-    _edit_student(student)
+
+    tab_details, tab_submissions = st.tabs(["Student details", "Answer sheets"])
+    with tab_details:
+        _edit_student(student)
+    with tab_submissions:
+        _submissions_view(student.id)
 
 
 def _render_student_list(students) -> None:
@@ -99,7 +138,7 @@ def _render_student_list(students) -> None:
         _create_student_dialog()
 
     if not students:
-        st.info("No students yet. Students are also created automatically when a submission's "
+        st.info("No students yet. Students are also created automatically when an answer sheet's "
                  "header is read successfully, or created manually above.")
         return
 

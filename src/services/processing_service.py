@@ -32,7 +32,7 @@ from src.database.repositories import (
     SubmissionRepository,
 )
 from src.grading.grader import AnswerKeyEntry, DetectedAnswer, grade_submission
-from src.ocr.paddle import run_ocr, run_ocr_single_line
+from src.ocr.paddle import RawOCRLine, run_ocr, run_ocr_single_line
 from src.ocr.validation import STUDENT_NUMBER_PATTERN, parse_answer_line, validate_header_field
 from src.schemas import (
     AnswerState,
@@ -42,7 +42,7 @@ from src.schemas import (
     SubmissionStatus,
 )
 from src.vision.document_detection import detect_document_corners
-from src.vision.line_detection import crop_region, detect_answer_line_regions, detect_header_field_regions
+from src.vision.line_detection import crop_region, detect_header_field_regions
 from src.vision.perspective import warp_document
 from src.vision.preprocessing import (
     apply_clahe,
@@ -124,16 +124,20 @@ def create_pending_submission(exam_id: int, file_bytes: bytes, original_name: st
         return submission.id
 
 
-def _extract_header_fields(image, submission_id: int) -> dict[str, str | None]:
-    full_page_lines = run_ocr(image)
-    text_boxes = [(line.text, line.bbox) for line in full_page_lines]
+def _extract_header_fields(
+    full_page_lines: list[RawOCRLine], image, submission_id: int
+) -> dict[str, str | None]:
+    text_boxes = [(line.text, line.confidence, line.bbox) for line in full_page_lines]
 
     regions = detect_header_field_regions(image, text_boxes, HEADER_LABEL_KEYWORDS)
     fields: dict[str, str | None] = {}
 
     for region in regions:
-        crop = crop_region(image, region.bbox)
-        raw = run_ocr_single_line(crop)
+        if region.inline_text is not None:
+            raw = RawOCRLine(text=region.inline_text, confidence=region.inline_confidence, bbox=region.bbox)
+        else:
+            crop = crop_region(image, region.bbox)
+            raw = run_ocr_single_line(crop)
         pattern = STUDENT_NUMBER_PATTERN if region.field_name == "student_number" else None
         result = validate_header_field(raw, region.field_name, pattern)
         fields[region.field_name] = result.parsed_value
@@ -149,14 +153,33 @@ def _extract_header_fields(image, submission_id: int) -> dict[str, str | None]:
 
 
 def _process_answers(
+    full_page_lines: list[RawOCRLine],
     image,
     exam_id: int,
     submission_id: int,
     num_questions: int,
 ) -> tuple[list[DetectedAnswer], int, int, int]:
-    """Returns (detected_answers, ocr_accepted_count, escalated_count, manual_review_count)."""
+    """Returns (detected_answers, ocr_accepted_count, escalated_count, manual_review_count).
+
+    Answer-line candidates come from the full-page OCR pass's own text-line
+    boxes (the same pass used for header fields) rather than a separate
+    pixel-density/contour segmentation: PaddleOCR's trained line detector is
+    far more robust to camera noise and printed ruled lines than a
+    hand-rolled whitespace-gap or connected-component heuristic, and reusing
+    it here avoids a second, redundant OCR pass per submission. Only lines
+    that parse as a "number + letter" answer line are kept, one per question
+    number (highest OCR confidence wins on a duplicate read).
+    """
     provider = get_vision_provider()
-    regions = detect_answer_line_regions(image)
+
+    candidates: dict[int, RawOCRLine] = {}
+    for line in full_page_lines:
+        result = parse_answer_line(line, num_questions)
+        if result.question_number is None:
+            continue
+        existing = candidates.get(result.question_number)
+        if existing is None or line.confidence > existing.confidence:
+            candidates[result.question_number] = line
 
     detected: list[DetectedAnswer] = []
     ocr_accepted = 0
@@ -165,23 +188,13 @@ def _process_answers(
 
     answer_rows: list[dict] = []
 
-    for region in regions:
-        crop = crop_region(image, region.bbox)
+    for question_number, raw in sorted(candidates.items()):
+        crop = crop_region(image, raw.bbox)
         crop_path = settings.crops_path / f"{submission_id}_{uuid.uuid4().hex}.png"
 
-        raw = run_ocr_single_line(crop)
         strike = detect_strike_through(crop)
 
-        if raw is None:
-            continue
-
         ocr_result = parse_answer_line(raw, num_questions)
-        if ocr_result is None or ocr_result.question_number is None:
-            # Can't anchor this crop to a question number at all -- skip, it
-            # is likely not an answer line (e.g. header text).
-            continue
-
-        question_number = ocr_result.question_number
         confidence = ocr_result.confidence
         detected_answer = ocr_result.detected_answer
         method = DetectionMethod.PADDLEOCR
@@ -237,6 +250,32 @@ def _process_answers(
                 answer_state=answer_state,
             )
         )
+
+    # Every question number gets a row, even ones no answer line was
+    # detected for -- otherwise the exam ends up with silent gaps instead of
+    # a visibly blank, reviewable answer.
+    for question_number in range(1, num_questions + 1):
+        if question_number in candidates:
+            continue
+        answer_rows.append(
+            {
+                "question_number": question_number,
+                "detected_answer": None,
+                "confidence": 0.0,
+                "detection_method": DetectionMethod.PADDLEOCR.value,
+                "answer_state": AnswerState.BLANK.value,
+                "review_status": ReviewStatus.PENDING.value,
+                "crop_image_path": None,
+            }
+        )
+        detected.append(
+            DetectedAnswer(
+                question_number=question_number,
+                detected_answer=None,
+                answer_state=AnswerState.BLANK,
+            )
+        )
+        manual_review += 1
 
     with get_session() as session:
         exam_repo = ExamRepository(session)
@@ -344,7 +383,9 @@ def process_submission(submission_id: int, exam_id: int) -> SubmissionOutcome:
     with get_session() as session:
         SubmissionRepository(session).set_processed_image_path(submission_id, str(processed_path))
 
-    header_fields = _extract_header_fields(working_image, submission_id)
+    full_page_lines = run_ocr(working_image)
+
+    header_fields = _extract_header_fields(full_page_lines, working_image, submission_id)
     student_number = header_fields.get("student_number")
     name = header_fields.get("name")
 
@@ -358,7 +399,7 @@ def process_submission(submission_id: int, exam_id: int) -> SubmissionOutcome:
             SubmissionRepository(session).set_student(submission_id, student.id)
 
     detected_answers, ocr_accepted, escalated, manual_review_count = _process_answers(
-        working_image, exam_id, submission_id, num_questions
+        full_page_lines, working_image, exam_id, submission_id, num_questions
     )
 
     with get_session() as session:
