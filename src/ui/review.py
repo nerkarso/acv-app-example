@@ -98,7 +98,7 @@ def render() -> None:
     st.title("Review Queue")
 
     exams = exam_service.list_exams()
-    exam_options = {"All exams": None} | {f"{e.name} (id={e.id})": e.id for e in exams}
+    exam_options = {"All exams": None} | {f"{e.name}": e.id for e in exams}
     selected_label = st.selectbox("Exam", list(exam_options.keys()))
     exam_id = exam_options[selected_label]
 

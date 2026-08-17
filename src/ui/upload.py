@@ -13,7 +13,7 @@ def render() -> None:
         st.info("Create an exam first on the Exams page.")
         return
 
-    exam_options = {f"{e.name} (id={e.id})": e.id for e in exams}
+    exam_options = {f"{e.name}": e.id for e in exams}
     selected_label = st.selectbox("Exam", list(exam_options.keys()))
     exam_id = exam_options[selected_label]
 
@@ -55,9 +55,10 @@ def render() -> None:
             total = len(submission_ids)
             for tally, outcome in processing_service.process_batch(exam_id, submission_ids):
                 progress_bar.progress(tally.processed / total)
-                status_placeholder.write(
-                    f"Processed {tally.processed}/{total} -- last: {outcome.file_name} ({outcome.status})"
-                )
+                if outcome is not None:
+                    status_placeholder.write(
+                        f"Processed {tally.processed}/{total} -- last: {outcome.file_name} ({outcome.status})"
+                    )
                 tally_placeholder.write(
                     f"Successful: {tally.successful} | Needs review: {tally.needs_review} | "
                     f"Failed: {tally.failed} | OCR accepted: {tally.ocr_accepted_count} | "

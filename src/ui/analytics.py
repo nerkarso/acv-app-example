@@ -14,7 +14,7 @@ def render() -> None:
         st.info("No exams yet.")
         return
 
-    exam_options = {f"{e.name} (id={e.id})": e.id for e in exams}
+    exam_options = {f"{e.name}": e.id for e in exams}
     selected_label = st.selectbox("Exam", list(exam_options.keys()))
     exam_id = exam_options[selected_label]
     exam = exam_service.get_exam(exam_id)

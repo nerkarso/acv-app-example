@@ -31,7 +31,7 @@ def get_dashboard_stats() -> DashboardStats:
         )
         student_ids = {s.student_id for s in submissions if s.student_id is not None}
 
-        percentages = [s.percentage for s in submissions]
+        percentages = [s.percentage for s in submissions if s.percentage is not None]
         average = statistics.mean(percentages) if percentages else None
         pass_rate = (
             (sum(1 for p in percentages if p >= PASS_THRESHOLD_PCT) / len(percentages) * 100.0)
@@ -142,7 +142,7 @@ def get_course_trend(course: str) -> pd.DataFrame:
                     )
                 ).scalars()
             )
-            percentages = [s.percentage for s in submissions]
+            percentages = [s.percentage for s in submissions if s.percentage is not None]
             rows.append(
                 {
                     "exam_id": exam.id,

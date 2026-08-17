@@ -173,10 +173,9 @@ def _process_answers(
         strike = detect_strike_through(crop)
 
         if raw is None:
-            ocr_result = None
-        else:
-            ocr_result = parse_answer_line(raw, num_questions)
+            continue
 
+        ocr_result = parse_answer_line(raw, num_questions)
         if ocr_result is None or ocr_result.question_number is None:
             # Can't anchor this crop to a question number at all -- skip, it
             # is likely not an answer line (e.g. header text).
@@ -275,8 +274,10 @@ def process_submission(submission_id: int, exam_id: int) -> SubmissionOutcome:
     stale_files: list[str] = []
     with get_session() as session:
         submission = SubmissionRepository(session).get(submission_id)
-        original_path = submission.original_image_path
         exam = ExamRepository(session).get(exam_id)
+        if submission is None or exam is None:
+            raise ValueError(f"Submission {submission_id} or exam {exam_id} not found")
+        original_path = submission.original_image_path
         num_questions = exam.total_questions or 0
 
         # A reprocess (e.g. force-reprocess on the Upload page) must not
@@ -316,7 +317,7 @@ def process_submission(submission_id: int, exam_id: int) -> SubmissionOutcome:
         _log(submission_id, stage="pipeline", status="needs_review", message=message)
 
     image = load_image(original_path)
-    if not validate_image(image):
+    if image is None or not validate_image(image):
         return fail(ErrorCode.INVALID_IMAGE, "Image could not be read or is corrupt")
 
     image = resize_if_oversized(image)
@@ -325,7 +326,7 @@ def process_submission(submission_id: int, exam_id: int) -> SubmissionOutcome:
     document_ok = detection.success
     working_image = image
 
-    if not document_ok:
+    if not document_ok or detection.corners is None:
         needs_review(ErrorCode.DOCUMENT_NOT_FOUND, "Document contour not found; using original image")
     else:
         warped = warp_document(image, detection.corners)

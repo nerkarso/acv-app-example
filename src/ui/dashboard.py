@@ -22,9 +22,3 @@ def render() -> None:
         f"{stats.pass_rate_pct:.1f}%" if stats.pass_rate_pct is not None else "-",
     )
     col5.metric("Exams Requiring Review", stats.exams_requiring_review)
-
-    st.divider()
-    st.caption(
-        "Use the Exams page to create an exam and answer key, Upload to batch-process "
-        "papers, Review to resolve flagged answers, and Analytics/Results for reporting."
-    )

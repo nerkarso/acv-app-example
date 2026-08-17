@@ -1,26 +1,27 @@
 from __future__ import annotations
 
-import pandas as pd
 import streamlit as st
 
 from src.services import student_service
+from src.ui._record_table import record_table
+from src.ui._table_controls import get_page_size, paginate_slice, pagination_controls
 
 
-def _create_student_form() -> None:
-    with st.expander("Add student", icon=":material/person_add:"):
-        with st.form("create_student_form"):
-            student_number = st.text_input("Student number")
-            name = st.text_input("Name")
-            if st.form_submit_button("Add student"):
-                if not student_number.strip():
-                    st.error("Student number is required.")
-                else:
-                    try:
-                        student_service.create_student(student_number.strip(), name.strip() or None)
-                        st.success("Student added.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Could not add student: {exc}")
+@st.dialog("Create student")
+def _create_student_dialog() -> None:
+    with st.form("create_student_form", clear_on_submit=True, border=False):
+        student_number = st.text_input("Student number")
+        name = st.text_input("Name")
+        if st.form_submit_button("Create student"):
+            if not student_number.strip():
+                st.error("Student number is required.")
+            else:
+                try:
+                    student_service.create_student(student_number.strip(), name.strip() or None)
+                    st.session_state["_toast"] = "Student created."
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not create student: {exc}")
 
 
 @st.dialog("Delete student")
@@ -29,12 +30,32 @@ def _confirm_delete_student(student_id: int, student_number: str) -> None:
         f"This permanently deletes student '{student_number}'. Their existing submissions "
         "are kept but unlinked from this student. This cannot be undone."
     )
-    col1, col2 = st.columns(2)
-    if col1.button("Delete", type="primary"):
-        student_service.delete_student(student_id)
-        st.rerun()
-    if col2.button("Cancel"):
-        st.rerun()
+    with st.container(horizontal=True, horizontal_alignment="distribute"):
+        if st.button("Delete", type="primary"):
+            student_service.delete_student(student_id)
+            st.session_state.pop("selected_student_id", None)
+            st.session_state["_student_view"] = "list"
+            st.rerun()
+        if st.button("Cancel"):
+            st.rerun()
+
+
+@st.dialog("Delete students")
+def _confirm_bulk_delete_students(student_ids: list[int]) -> None:
+    st.warning(
+        f"This permanently deletes {len(student_ids)} student(s). Their existing submissions "
+        "are kept but unlinked. This cannot be undone."
+    )
+    with st.container(horizontal=True, horizontal_alignment="distribute"):
+        if st.button("Delete", type="primary"):
+            for student_id in student_ids:
+                student_service.delete_student(student_id)
+            if st.session_state.get("selected_student_id") in student_ids:
+                st.session_state.pop("selected_student_id", None)
+                st.session_state["_student_view"] = "list"
+            st.rerun()
+        if st.button("Cancel"):
+            st.rerun()
 
 
 def _edit_student(student) -> None:
@@ -43,17 +64,19 @@ def _edit_student(student) -> None:
         student_number = st.text_input("Student number", value=student.student_number)
         name = st.text_input("Name", value=student.name or "")
 
-        col1, col2 = st.columns(2)
-        save = col1.form_submit_button("Save changes", type="primary")
-        delete = col2.form_submit_button("Delete student", icon=":material/delete:")
+        with st.container(horizontal=True, horizontal_alignment="distribute"):
+            save = st.form_submit_button("Save changes", type="primary")
+            delete = st.form_submit_button("Delete student", icon=":material/delete:")
 
         if save:
-            if not student_number.strip():
+            if not (student_number or "").strip():
                 st.error("Student number is required.")
             else:
                 try:
-                    student_service.update_student(student.id, student_number.strip(), name.strip() or None)
-                    st.success("Student updated.")
+                    student_service.update_student(
+                        student.id, (student_number or "").strip(), (name or "").strip() or None
+                    )
+                    st.toast("Student updated.", icon=":material/check_circle:")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Could not update student: {exc}")
@@ -62,28 +85,105 @@ def _edit_student(student) -> None:
             _confirm_delete_student(student.id, student.student_number)
 
 
+def _render_student_detail(student) -> None:
+    if st.button("Back to students", icon=":material/arrow_back:"):
+        st.session_state["_student_view"] = "list"
+        st.rerun()
+
+    st.header(student.name or student.student_number)
+    _edit_student(student)
+
+
+def _render_student_list(students) -> None:
+    if st.button("Create student", icon=":material/add:"):
+        _create_student_dialog()
+
+    if not students:
+        st.info("No students yet. Students are also created automatically when a submission's "
+                 "header is read successfully, or created manually above.")
+        return
+
+    search = st.text_input(
+        "Search students", key="students_search", placeholder="Search by student number or name",
+        label_visibility="collapsed",
+    )
+    if search:
+        needle = search.lower()
+        students = [
+            s for s in students
+            if needle in (s.student_number or "").lower() or needle in (s.name or "").lower()
+        ]
+
+    sort_state = st.session_state.setdefault("students_sort", {"key": "id", "dir": "asc"})
+    sort_key_fns = {
+        "id": lambda s: s.id,
+        "student_number": lambda s: (s.student_number or "").lower(),
+        "name": lambda s: (s.name or "").lower(),
+    }
+    students = sorted(
+        students, key=sort_key_fns[sort_state["key"]], reverse=sort_state["dir"] == "desc"
+    )
+
+    if not students:
+        st.info("No students match your search.")
+        return
+
+    prior_selected = st.session_state.get("students_table", {}).get("selected", [])
+    page_size = get_page_size("students_page")
+    page_students, num_pages, total, page = paginate_slice(
+        students, key="students_page", page_size=page_size
+    )
+    rows = [
+        {"id": s.id, "student_number": s.student_number, "name": s.name or ""}
+        for s in page_students
+    ]
+    columns = [
+        {"key": "id", "label": "ID", "width": 60},
+        {"key": "student_number", "label": "Student number", "width": 150},
+        {"key": "name", "label": "Name", "width": 220},
+    ]
+
+    result = record_table(rows, columns, key="students_table", sort=sort_state)
+    if result.sort_requested:
+        if result.sort_requested == sort_state["key"]:
+            sort_state["dir"] = "asc" if sort_state["dir"] == "desc" else "desc"
+        else:
+            sort_state["key"] = result.sort_requested
+            sort_state["dir"] = "asc"
+        st.session_state["students_sort"] = sort_state
+        st.session_state["students_page"] = 1
+        st.rerun()
+    if result.opened:
+        st.session_state["selected_student_id"] = result.opened
+        st.session_state["_student_view"] = "detail"
+        st.rerun()
+
+    left, right = st.columns([1, 1])
+    with left:
+        if prior_selected and st.button(
+            f"Delete selected ({len(prior_selected)})", icon=":material/delete:", type="primary"
+        ):
+            _confirm_bulk_delete_students(prior_selected)
+    with right:
+        pagination_controls(num_pages, page, page_size, total, key="students_page")
+
+
 def render() -> None:
     st.title("Students")
 
-    _create_student_form()
-    st.divider()
+    toast_message = st.session_state.pop("_toast", None)
+    if toast_message:
+        st.toast(toast_message, icon=":material/check_circle:")
 
     students = student_service.list_students()
-    if not students:
-        st.info("No students yet. Students are also created automatically when a submission's "
-                 "header is read successfully, or added manually above.")
+
+    student_id = st.session_state.get("selected_student_id")
+    if st.session_state.get("_student_view") == "detail" and student_id is not None:
+        student = student_service.get_student(student_id)
+        if student is None:
+            st.session_state["_student_view"] = "list"
+            st.rerun()
+        _render_student_detail(student)
         return
 
-    st.dataframe(
-        pd.DataFrame(
-            [{"id": s.id, "student_number": s.student_number, "name": s.name} for s in students]
-        ),
-        hide_index=True,
-    )
-
-    st.divider()
-    options = {f"{s.student_number} - {s.name or '(no name)'} (id={s.id})": s.id for s in students}
-    selected_label = st.selectbox("Select student to edit", list(options.keys()))
-    student = student_service.get_student(options[selected_label])
-    if student is not None:
-        _edit_student(student)
+    _render_student_list(students)

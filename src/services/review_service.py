@@ -86,7 +86,7 @@ def resolve_submission_issue(submission_id: int, student_number: str, name: str 
         submission_repo.set_student(submission_id, student.id)
 
         submission = submission_repo.get(submission_id)
-        if submission.error_code == "STUDENT_NUMBER_UNREADABLE":
+        if submission is not None and submission.error_code == "STUDENT_NUMBER_UNREADABLE":
             _finalize_submission_status(session, submission_id, cleared_error_code="STUDENT_NUMBER_UNREADABLE")
 
 
@@ -158,6 +158,8 @@ def _finalize_submission_status(session, submission_id: int, cleared_error_code:
     exam_repo = ExamRepository(session)
 
     submission = submission_repo.get(submission_id)
+    if submission is None:
+        return
     all_answers = answer_repo.list_for_submission(submission_id)
 
     # total_points must reflect the full exam answer key, not just the
