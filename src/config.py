@@ -12,6 +12,8 @@ class Settings(BaseSettings):
 
     vision_provider: str = "none"  # claude | none
     anthropic_api_key: str | None = None
+    anthropic_base_url: str = "https://api.anthropic.com"
+    anthropic_claude_model: str = "claude-haiku-4-5-20251001"
 
     confidence_auto_accept: float = 0.90
     confidence_escalate_min: float = 0.70

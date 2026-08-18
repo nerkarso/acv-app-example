@@ -8,10 +8,10 @@ from src.database.database import get_session
 from src.database.models import Student, Submission
 from src.database.repositories import AnswerRepository, ExamRepository, StudentRepository, SubmissionRepository
 from src.schemas import VALID_ANSWERS
+from src.services import processing_service
 
-# Error codes that describe a submission-level problem (not tied to a single
-# answer) -- these must be cleared explicitly via resolve_submission_issue()
-# rather than by correcting/confirming individual answers.
+DOCUMENT_ERROR_CODES = {"DOCUMENT_NOT_FOUND", "DOCUMENT_TRANSFORM_FAILED"}
+
 SUBMISSION_LEVEL_ERROR_CODES = {
     "DOCUMENT_NOT_FOUND",
     "DOCUMENT_TRANSFORM_FAILED",
@@ -88,6 +88,22 @@ def resolve_submission_issue(submission_id: int, student_number: str, name: str 
         submission = submission_repo.get(submission_id)
         if submission is not None and submission.error_code == "STUDENT_NUMBER_UNREADABLE":
             _finalize_submission_status(session, submission_id, cleared_error_code="STUDENT_NUMBER_UNREADABLE")
+
+
+def dismiss_document_issue(submission_id: int) -> None:
+    """Accept a submission's document-detection issue as-is (the reviewer
+    has visually confirmed the already-detected answers look fine despite
+    the perspective-correction failure), clearing it without reprocessing."""
+    with get_session() as session:
+        submission = SubmissionRepository(session).get(submission_id)
+        if submission is not None and submission.error_code in DOCUMENT_ERROR_CODES:
+            _finalize_submission_status(session, submission_id, cleared_error_code=submission.error_code)
+
+
+def reprocess_submission_issue(submission_id: int, exam_id: int) -> processing_service.SubmissionOutcome:
+    """Re-run the full pipeline for one submission from the Review page,
+    e.g. after a document-detection failure, without needing a re-upload."""
+    return processing_service.process_submission(submission_id, exam_id)
 
 
 def update_submission_student(submission_id: int, student_number: str, name: str | None) -> None:

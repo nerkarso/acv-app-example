@@ -9,17 +9,14 @@ from __future__ import annotations
 import numpy as np
 
 from src.ai.base import VisionProvider
-from src.schemas import AnswerDetection, AnswerState, DetectionMethod
+from src.schemas import SubmissionEscalationResult
 
 
 class NullVisionProvider(VisionProvider):
-    def classify_answer(self, image: np.ndarray, valid_answers: list[str]) -> AnswerDetection:
-        return AnswerDetection(
-            answer=None,
-            state=AnswerState.AMBIGUOUS,
-            confidence=0.0,
-            method=DetectionMethod.CLOUD_VLM,
-        )
+    def read_submission(
+        self, page_image: np.ndarray, field_names: list[str], question_numbers: list[int]
+    ) -> SubmissionEscalationResult:
+        return SubmissionEscalationResult(fields={}, answers={})
 
     @property
     def is_available(self) -> bool:

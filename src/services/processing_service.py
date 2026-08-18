@@ -38,6 +38,7 @@ from src.schemas import (
     AnswerState,
     DetectionMethod,
     ErrorCode,
+    OCRFieldResult,
     ReviewStatus,
     SubmissionStatus,
 )
@@ -124,14 +125,14 @@ def create_pending_submission(exam_id: int, file_bytes: bytes, original_name: st
         return submission.id
 
 
-def _extract_header_fields(
-    full_page_lines: list[RawOCRLine], image, submission_id: int
-) -> dict[str, str | None]:
+def _extract_header_fields_ocr(full_page_lines: list[RawOCRLine], image) -> dict[str, OCRFieldResult]:
+    """OCR-only header-field extraction. Escalation (if anything here comes
+    back needing it) happens later, batched together with any uncertain
+    answers into one combined per-submission vision call."""
     text_boxes = [(line.text, line.confidence, line.bbox) for line in full_page_lines]
-
     regions = detect_header_field_regions(image, text_boxes, HEADER_LABEL_KEYWORDS)
-    fields: dict[str, str | None] = {}
 
+    fields: dict[str, OCRFieldResult] = {}
     for region in regions:
         if region.inline_text is not None:
             raw = RawOCRLine(text=region.inline_text, confidence=region.inline_confidence, bbox=region.bbox)
@@ -139,27 +140,30 @@ def _extract_header_fields(
             crop = crop_region(image, region.bbox)
             raw = run_ocr_single_line(crop)
         pattern = STUDENT_NUMBER_PATTERN if region.field_name == "student_number" else None
-        result = validate_header_field(raw, region.field_name, pattern)
-        fields[region.field_name] = result.parsed_value
-        if result.needs_escalation:
-            _log(
-                submission_id,
-                stage="header_extraction",
-                status="needs_review",
-                message=f"{region.field_name}: low confidence or unparseable ('{result.raw_text}')",
-            )
+        fields[region.field_name] = validate_header_field(raw, region.field_name, pattern)
 
     return fields
 
 
-def _process_answers(
-    full_page_lines: list[RawOCRLine],
-    image,
-    exam_id: int,
-    submission_id: int,
-    num_questions: int,
-) -> tuple[list[DetectedAnswer], int, int, int]:
-    """Returns (detected_answers, ocr_accepted_count, escalated_count, manual_review_count).
+@dataclass
+class _AnswerRow:
+    question_number: int
+    detected_answer: str | None
+    confidence: float
+    detection_method: DetectionMethod
+    answer_state: AnswerState
+    review_status: ReviewStatus
+    crop_image_path: str | None
+    needs_escalation: bool
+    auto_accepted: bool = False
+
+
+def _score_answers_ocr(
+    full_page_lines: list[RawOCRLine], image, submission_id: int, num_questions: int
+) -> dict[int, _AnswerRow]:
+    """OCR-only answer scoring (strike-through + pattern parse + confidence
+    gate). Escalation happens later, batched with header fields into one
+    combined per-submission vision call.
 
     Answer-line candidates come from the full-page OCR pass's own text-line
     boxes (the same pass used for header fields) rather than a separate
@@ -170,8 +174,6 @@ def _process_answers(
     that parse as a "number + letter" answer line are kept, one per question
     number (highest OCR confidence wins on a duplicate read).
     """
-    provider = get_vision_provider()
-
     candidates: dict[int, RawOCRLine] = {}
     for line in full_page_lines:
         result = parse_answer_line(line, num_questions)
@@ -181,128 +183,182 @@ def _process_answers(
         if existing is None or line.confidence > existing.confidence:
             candidates[result.question_number] = line
 
-    detected: list[DetectedAnswer] = []
-    ocr_accepted = 0
-    escalated = 0
-    manual_review = 0
+    rows: dict[int, _AnswerRow] = {}
 
-    answer_rows: list[dict] = []
-
-    for question_number, raw in sorted(candidates.items()):
+    for question_number, raw in candidates.items():
         crop = crop_region(image, raw.bbox)
         crop_path = settings.crops_path / f"{submission_id}_{uuid.uuid4().hex}.png"
-
-        strike = detect_strike_through(crop)
-
-        ocr_result = parse_answer_line(raw, num_questions)
-        confidence = ocr_result.confidence
-        detected_answer = ocr_result.detected_answer
-        method = DetectionMethod.PADDLEOCR
-        review_status = ReviewStatus.NOT_REQUIRED
-        answer_state = AnswerState.CLEAR
-
-        if strike.is_struck_through:
-            answer_state = AnswerState.STRUCK_THROUGH
-            review_status = ReviewStatus.PENDING
-            manual_review += 1
-        elif detected_answer is None:
-            answer_state = AnswerState.BLANK if not raw.text.strip() else AnswerState.AMBIGUOUS
-
-        if answer_state == AnswerState.CLEAR:
-            if confidence >= settings.confidence_auto_accept and detected_answer is not None:
-                ocr_accepted += 1
-            elif confidence >= settings.confidence_escalate_min and provider.is_available:
-                detection = provider.classify_answer(crop, ["A", "B", "C", "D"])
-                escalated += 1
-                detected_answer = detection.answer
-                confidence = detection.confidence
-                method = DetectionMethod.CLOUD_VLM
-                answer_state = detection.state
-                if detection.answer is None:
-                    review_status = ReviewStatus.PENDING
-                    manual_review += 1
-            else:
-                review_status = ReviewStatus.PENDING
-                manual_review += 1
-
         try:
             cv2.imwrite(str(crop_path), crop)
             crop_path_str = str(crop_path)
         except Exception:
             crop_path_str = None
 
-        answer_rows.append(
-            {
-                "question_number": question_number,
-                "detected_answer": detected_answer,
-                "confidence": confidence,
-                "detection_method": method.value,
-                "answer_state": answer_state.value,
-                "review_status": review_status.value,
-                "crop_image_path": crop_path_str,
-            }
+        strike = detect_strike_through(crop)
+        ocr_result = parse_answer_line(raw, num_questions)
+        confidence = ocr_result.confidence
+        detected_answer = ocr_result.detected_answer
+        answer_state = AnswerState.CLEAR
+        review_status = ReviewStatus.NOT_REQUIRED
+        needs_escalation = False
+        auto_accepted = False
+
+        if strike.is_struck_through:
+            # A struck-through mark always needs a human decision
+            answer_state = AnswerState.STRUCK_THROUGH
+            review_status = ReviewStatus.PENDING
+        elif detected_answer is None:
+            answer_state = AnswerState.BLANK if not raw.text.strip() else AnswerState.AMBIGUOUS
+            needs_escalation = True
+        elif confidence < settings.confidence_auto_accept:
+            needs_escalation = True
+        else:
+            auto_accepted = True
+
+        rows[question_number] = _AnswerRow(
+            question_number=question_number,
+            detected_answer=detected_answer,
+            confidence=confidence,
+            detection_method=DetectionMethod.PADDLEOCR,
+            answer_state=answer_state,
+            review_status=review_status,
+            crop_image_path=crop_path_str,
+            needs_escalation=needs_escalation,
+            auto_accepted=auto_accepted,
         )
 
-        detected.append(
-            DetectedAnswer(
-                question_number=question_number,
-                detected_answer=detected_answer,
-                answer_state=answer_state,
-            )
-        )
-
-    # Every question number gets a row, even ones no answer line was
-    # detected for -- otherwise the exam ends up with silent gaps instead of
-    # a visibly blank, reviewable answer.
+    # Every question number gets a row
     for question_number in range(1, num_questions + 1):
-        if question_number in candidates:
+        if question_number in rows:
             continue
-        answer_rows.append(
-            {
-                "question_number": question_number,
-                "detected_answer": None,
-                "confidence": 0.0,
-                "detection_method": DetectionMethod.PADDLEOCR.value,
-                "answer_state": AnswerState.BLANK.value,
-                "review_status": ReviewStatus.PENDING.value,
-                "crop_image_path": None,
-            }
+        rows[question_number] = _AnswerRow(
+            question_number=question_number,
+            detected_answer=None,
+            confidence=0.0,
+            detection_method=DetectionMethod.PADDLEOCR,
+            answer_state=AnswerState.BLANK,
+            review_status=ReviewStatus.NOT_REQUIRED,
+            crop_image_path=None,
+            needs_escalation=True,
         )
-        detected.append(
-            DetectedAnswer(
-                question_number=question_number,
-                detected_answer=None,
-                answer_state=AnswerState.BLANK,
-            )
-        )
-        manual_review += 1
 
+    return rows
+
+
+_USED_HEADER_FIELDS = {"student_number", "name"}
+
+
+def _apply_escalation(
+    rows: dict[int, _AnswerRow], fields: dict[str, OCRFieldResult], image, submission_id: int
+) -> None:
+    """One combined vision-provider call for every field/answer OCR left
+    uncertain, merged back into `rows`/`fields` in place. Replaces one API
+    call per uncertain item with at most one call per submission."""
+    provider = get_vision_provider()
+
+    # "subject"/"date" are located by HEADER_LABEL_KEYWORDS but never
+    # persisted or used downstream
+    field_names = [
+        name
+        for name, result in fields.items()
+        if result.needs_escalation and name in _USED_HEADER_FIELDS
+    ]
+    question_numbers = [qn for qn, row in rows.items() if row.needs_escalation]
+
+    if provider.is_available and (field_names or question_numbers):
+        outcome = provider.read_submission(image, field_names, question_numbers)
+        _log(
+            submission_id,
+            stage="escalation",
+            status="escalated",
+            message=(
+                f"combined vision call: {len(field_names)} field(s) / {len(question_numbers)} "
+                f"answer(s) requested; {len(outcome.fields)} field(s) / {len(outcome.answers)} "
+                "answer(s) returned"
+            ),
+        )
+
+        for name in field_names:
+            escalated_field = outcome.fields.get(name)
+            if escalated_field is None:
+                continue
+            parsed_value = escalated_field.parsed_value
+            if parsed_value is not None and name == "student_number" and not STUDENT_NUMBER_PATTERN.match(
+                parsed_value
+            ):
+                parsed_value = None
+            fields[name] = escalated_field.model_copy(
+                update={"parsed_value": parsed_value, "needs_escalation": parsed_value is None}
+            )
+
+        for qn in question_numbers:
+            detection = outcome.answers.get(qn)
+            if detection is None:
+                continue
+            row = rows[qn]
+            row.detected_answer = detection.answer
+            row.confidence = detection.confidence
+            row.detection_method = DetectionMethod.CLOUD_VLM
+            row.answer_state = detection.state
+            row.needs_escalation = False
+            # A struck-through mark always needs a human decision, same as
+            # when strike-through is caught locally
+            if detection.state == AnswerState.STRUCK_THROUGH or detection.answer is None:
+                row.review_status = ReviewStatus.PENDING
+            else:
+                row.review_status = ReviewStatus.NOT_REQUIRED
+
+    # Anything still unresolved (no provider configured, or the model's
+    # response omitted it) falls back to manual review.
+    for row in rows.values():
+        if row.needs_escalation:
+            row.review_status = ReviewStatus.PENDING
+    for name, result in fields.items():
+        if result.needs_escalation:
+            _log(
+                submission_id,
+                stage="header_extraction",
+                status="needs_review",
+                message=f"{name}: low confidence or unparseable ('{result.raw_text}')",
+            )
+
+
+def _persist_answers(
+    rows: dict[int, _AnswerRow], exam_id: int, submission_id: int
+) -> tuple[list[DetectedAnswer], int, int, int]:
+    """Returns (detected_answers, ocr_accepted_count, escalated_count, manual_review_count)."""
     with get_session() as session:
         exam_repo = ExamRepository(session)
         answer_repo = AnswerRepository(session)
         key_by_number = {q.question_number: q for q in exam_repo.get_answer_key(exam_id)}
 
-        seen_numbers: set[int] = set()
-        for row in answer_rows:
-            qnum = row["question_number"]
-            if qnum in seen_numbers:
-                continue  # keep first detection per question number
-            seen_numbers.add(qnum)
-            key_entry = key_by_number.get(qnum)
+        for question_number, row in sorted(rows.items()):
+            key_entry = key_by_number.get(question_number)
             answer_repo.create(
                 submission_id=submission_id,
-                question_number=qnum,
-                detected_answer=row["detected_answer"],
+                question_number=question_number,
+                detected_answer=row.detected_answer,
                 correct_answer=key_entry.correct_answer if key_entry else None,
-                confidence=row["confidence"],
-                detection_method=row["detection_method"],
-                answer_state=row["answer_state"],
-                review_status=row["review_status"],
+                confidence=row.confidence,
+                detection_method=row.detection_method.value,
+                answer_state=row.answer_state.value,
+                review_status=row.review_status.value,
                 is_correct=None,
                 question_id=key_entry.id if key_entry else None,
-                crop_image_path=row["crop_image_path"],
+                crop_image_path=row.crop_image_path,
             )
 
+    detected = [
+        DetectedAnswer(
+            question_number=row.question_number,
+            detected_answer=row.detected_answer,
+            answer_state=row.answer_state,
+        )
+        for _, row in sorted(rows.items())
+    ]
+    ocr_accepted = sum(1 for row in rows.values() if row.auto_accepted)
+    escalated = sum(1 for row in rows.values() if row.detection_method == DetectionMethod.CLOUD_VLM)
+    manual_review = sum(1 for row in rows.values() if row.review_status == ReviewStatus.PENDING)
     return detected, ocr_accepted, escalated, manual_review
 
 
@@ -364,14 +420,20 @@ def process_submission(submission_id: int, exam_id: int) -> SubmissionOutcome:
     detection = detect_document_corners(image)
     document_ok = detection.success
     working_image = image
+    document_error_code: ErrorCode | None = None
+    document_error_message: str | None = None
 
     if not document_ok or detection.corners is None:
-        needs_review(ErrorCode.DOCUMENT_NOT_FOUND, "Document contour not found; using original image")
+        document_error_code = ErrorCode.DOCUMENT_NOT_FOUND
+        document_error_message = "Document contour not found; using original image"
+        needs_review(document_error_code, document_error_message)
     else:
         warped = warp_document(image, detection.corners)
         if warped is None:
             document_ok = False
-            needs_review(ErrorCode.DOCUMENT_TRANSFORM_FAILED, "Perspective transform failed; using original image")
+            document_error_code = ErrorCode.DOCUMENT_TRANSFORM_FAILED
+            document_error_message = "Perspective transform failed; using original image"
+            needs_review(document_error_code, document_error_message)
         else:
             working_image = warped
 
@@ -385,9 +447,14 @@ def process_submission(submission_id: int, exam_id: int) -> SubmissionOutcome:
 
     full_page_lines = run_ocr(working_image)
 
-    header_fields = _extract_header_fields(full_page_lines, working_image, submission_id)
-    student_number = header_fields.get("student_number")
-    name = header_fields.get("name")
+    header_fields = _extract_header_fields_ocr(full_page_lines, working_image)
+    answer_rows = _score_answers_ocr(full_page_lines, working_image, submission_id, num_questions)
+    _apply_escalation(answer_rows, header_fields, working_image, submission_id)
+
+    student_number_field = header_fields.get("student_number")
+    student_number = student_number_field.parsed_value if student_number_field else None
+    name_field = header_fields.get("name")
+    name = name_field.parsed_value if name_field else None
 
     student_unreadable = not student_number
     if student_unreadable:
@@ -398,8 +465,8 @@ def process_submission(submission_id: int, exam_id: int) -> SubmissionOutcome:
             student = student_repo.get_or_create(student_number, name)
             SubmissionRepository(session).set_student(submission_id, student.id)
 
-    detected_answers, ocr_accepted, escalated, manual_review_count = _process_answers(
-        full_page_lines, working_image, exam_id, submission_id, num_questions
+    detected_answers, ocr_accepted, escalated, manual_review_count = _persist_answers(
+        answer_rows, exam_id, submission_id
     )
 
     with get_session() as session:
@@ -426,8 +493,9 @@ def process_submission(submission_id: int, exam_id: int) -> SubmissionOutcome:
     review_message = None
     if not document_ok:
         final_status = SubmissionStatus.NEEDS_REVIEW.value
-        # error_code/message from the document-detection failure above are
-        # already persisted on the submission; leave them as the reason.
+        # set_processing_completed always overwrites error_code/message
+        review_error_code = document_error_code.value if document_error_code else None
+        review_message = document_error_message
     elif student_unreadable:
         final_status = SubmissionStatus.NEEDS_REVIEW.value
         review_error_code = ErrorCode.STUDENT_NUMBER_UNREADABLE.value

@@ -24,7 +24,7 @@ def render() -> None:
         st.warning("This exam has no answer key yet. Define one on the Exams page before grading.")
 
     files = st.file_uploader(
-        "Exam paper images", type=["jpg", "jpeg", "png"], accept_multiple_files=True
+        "Answer sheet images", type=["jpg", "jpeg", "png"], accept_multiple_files=True
     )
 
     force_reprocess = st.checkbox("Force reprocess duplicates (skip duplicate check)", value=False)
@@ -53,7 +53,7 @@ def render() -> None:
             total = len(submission_ids)
             tally = None
 
-            with st.status(f"Processing 0/{total} paper(s)...", expanded=True) as status:
+            with st.status(f"Processing 0/{total} answer sheet(s)...", expanded=True) as status:
                 progress_bar = st.progress(0.0)
                 current_file = st.empty()
                 metric_cols = st.columns(5)
@@ -72,10 +72,10 @@ def render() -> None:
                     metric_failed.metric("Failed", tally.failed)
                     metric_ocr_accepted.metric("OCR accepted", tally.ocr_accepted_count)
                     metric_escalated.metric("Escalated", tally.escalated_count)
-                    status.update(label=f"Processing {tally.processed}/{total} paper(s)...")
+                    status.update(label=f"Processing {tally.processed}/{total} answer sheet(s)...")
 
                 status.update(
-                    label=f"Processed {total} paper(s)",
+                    label=f"Processed {total} answer sheet(s)",
                     state="error" if tally and tally.failed else "complete",
                 )
 

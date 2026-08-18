@@ -26,12 +26,17 @@ def _get_engine():
             if _engine is None:
                 from paddleocr import PaddleOCR
 
-                _engine = PaddleOCR(
+                kwargs = dict(
                     lang="nl",
                     use_doc_orientation_classify=False,
                     use_doc_unwarping=False,
                     use_textline_orientation=False,
                 )
+                try:
+                    _engine = PaddleOCR(cpu_threads=1, **kwargs)
+                except TypeError:
+                    logger.warning("PaddleOCR build does not accept cpu_threads; running without it")
+                    _engine = PaddleOCR(**kwargs)
     return _engine
 
 

@@ -122,8 +122,8 @@ class StrikeThroughResult(BaseModel):
 class AnswerDetection(BaseModel):
     """Common output shape for any detector (OCR, vision provider, or manual).
 
-    This is the shape VisionProvider.classify_answer returns, reused as the
-    canonical "one detected answer" shape across the pipeline.
+    This is the shape VisionProvider.read_submission returns per answer,
+    reused as the canonical "one detected answer" shape across the pipeline.
     """
 
     answer: str | None = None  # 'A'|'B'|'C'|'D'|None -- never guessed
@@ -137,6 +137,15 @@ class AnswerDetection(BaseModel):
         if v is not None and v not in VALID_ANSWERS:
             raise ValueError(f"answer must be one of {VALID_ANSWERS} or None, got {v!r}")
         return v
+
+
+class SubmissionEscalationResult(BaseModel):
+    """Combined output of one whole-page vision-provider call: every header
+    field and answer the OCR pass flagged uncertain, read from a single
+    image in a single request instead of one request per uncertain item."""
+
+    fields: dict[str, OCRFieldResult] = Field(default_factory=dict)
+    answers: dict[int, AnswerDetection] = Field(default_factory=dict)
 
 
 class HeaderExtractionResult(BaseModel):

@@ -87,11 +87,25 @@ def _render_submission_issues(exam_id: int | None) -> None:
                                 st.rerun()
                             else:
                                 st.error("Student number is required.")
-                else:
+                elif issue.error_code in review_service.DOCUMENT_ERROR_CODES:
                     st.caption(
-                        "Document could not be normalized -- re-photograph and re-upload with "
-                        "'Force reprocess' on the Upload page."
+                        "Document could not be normalized. Reprocess to try again, or dismiss if "
+                        "the detected answers already look correct."
                     )
+                    with st.container(horizontal=True):
+                        if st.button(
+                            "Reprocess", key=f"reprocess_{issue.submission_id}", icon=":material/refresh:"
+                        ):
+                            with st.spinner("Reprocessing..."):
+                                review_service.reprocess_submission_issue(issue.submission_id, issue.exam_id)
+                            st.rerun()
+                        if st.button(
+                            "Dismiss issue",
+                            key=f"dismiss_{issue.submission_id}",
+                            icon=":material/check_circle:",
+                        ):
+                            review_service.dismiss_document_issue(issue.submission_id)
+                            st.rerun()
 
 
 def render() -> None:

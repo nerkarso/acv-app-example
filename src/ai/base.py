@@ -10,14 +10,19 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from src.schemas import AnswerDetection
+from src.schemas import SubmissionEscalationResult
 
 
 class VisionProvider(ABC):
     @abstractmethod
-    def classify_answer(self, image: np.ndarray, valid_answers: list[str]) -> AnswerDetection:
-        """Classify a single small crop (one answer or header field) into one
-        of `valid_answers`, or None with an appropriate state -- never guessed."""
+    def read_submission(
+        self, page_image: np.ndarray, field_names: list[str], question_numbers: list[int]
+    ) -> SubmissionEscalationResult:
+        """Read every listed header field and classify every listed answer
+        from a single page image in one call -- the given field/question
+        lists are exactly what PaddleOCR could not confidently resolve on
+        its own. Never guess a value that isn't reasonably legible; leave it
+        absent from the result (or null) instead."""
         raise NotImplementedError
 
     @property
